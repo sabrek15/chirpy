@@ -1,0 +1,1 @@
+goose postgres "postgres://sabrek:postgres@localhost:5432/chirpy?sslmode=disable" down
