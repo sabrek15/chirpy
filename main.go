@@ -24,17 +24,11 @@ type apiConfig struct {
 	platform string
 }
 
-type chirpRequest struct {
-	Body string `json:"body"`
-}
 
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
-type cleanedResponse struct {
-	CleanedBody		string `json:"cleaned_body"`
-}
 
 type createUser struct {
 	Email	string `json:"email"`
@@ -128,30 +122,6 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 }
 
 
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	defer r.Body.Close()
-	var resp chirpRequest
-	err := json.NewDecoder(r.Body).Decode(&resp)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Something went Wrong")
-		return
-	}
-
-	if len(resp.Body) > 140 {
-		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-		return
-	}
-
-	cleanedChirp := cleanChirp(resp.Body)
-
-	respondWithJSON(w, http.StatusAccepted, cleanedResponse{CleanedBody: cleanedChirp})
-}
-
 func (cfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -168,10 +138,82 @@ func (cfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := cfg.db.CreateUser(r.Context(), req.Email)
 	if err != nil {
-		log.Fatal(err)
+		respondWithError(w, http.StatusNotFound, "couldn't create user")
+		return
 	}
 
 	respondWithJSON(w, http.StatusCreated, user)
+}
+
+func (cfg *apiConfig) postChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	
+	defer r.Body.Close()
+	type parameters struct {
+		Body	string `json:"body"`
+		UserID 	uuid.UUID `json:"user_id"`
+	}
+	var req parameters
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Something went Wrong")
+		return
+	}
+
+	if len(req.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+
+	cleanedBody := cleanChirp(req.Body)
+
+	chirp, err := cfg.db.CreateChrips(r.Context(), database.CreateChripsParams{Body: cleanedBody, UserID: req.UserID})
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "couldn't create chirp")
+		return
+	}
+	respondWithJSON(w, http.StatusCreated, chirp)
+}
+
+func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request){
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	
+	defer r.Body.Close()
+	
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		log.Fatal(err)
+	}
+	respondWithJSON(w, http.StatusCreated, chirps)
+}
+
+func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request){
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	chirpIDstr := r.PathValue("chirpid")
+	chirpID, err := uuid.Parse(chirpIDstr)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Couldn't parse chirp id")
+		return
+	}
+	
+	defer r.Body.Close()
+	
+	chirp, err := cfg.db.GetChirpsByID(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Chirp not found")
+		return
+	}
+	respondWithJSON(w, http.StatusCreated, chirp)
 }
 
 func main() {
@@ -209,8 +251,10 @@ func main() {
 	serverHandler.HandleFunc("GET /api/healthz", readinessHandler)
 	serverHandler.HandleFunc("GET /admin/metrics", cfg.metricsHandler)
 	serverHandler.HandleFunc("POST /admin/reset", cfg.userResetHandler)
-	serverHandler.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 	serverHandler.HandleFunc("POST /api/users", cfg.PostUsersHandler)
+	serverHandler.HandleFunc("POST /api/chirps", cfg.postChirpsHandler)
+	serverHandler.HandleFunc("GET /api/chirps", cfg.getChirpsHandler)
+	serverHandler.HandleFunc("GET /api/chirps/{chirpid}", cfg.getChirpByID)
 
 	server := &http.Server{
 		Addr:    ":8080",
