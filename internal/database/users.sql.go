@@ -69,3 +69,39 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	)
 	return i, err
 }
+
+const updateUserCredentials = `-- name: UpdateUserCredentials :one
+UPDATE users
+SET
+    email = COALESCE($2, email),
+    hashed_password = COALESCE($3, hashed_password),
+    updated_at = NOW()
+WHERE
+    id = $1
+RETURNING id, created_at, updated_at, email
+`
+
+type UpdateUserCredentialsParams struct {
+	ID             uuid.UUID
+	Email          string
+	HashedPassword string
+}
+
+type UpdateUserCredentialsRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Email     string
+}
+
+func (q *Queries) UpdateUserCredentials(ctx context.Context, arg UpdateUserCredentialsParams) (UpdateUserCredentialsRow, error) {
+	row := q.db.QueryRowContext(ctx, updateUserCredentials, arg.ID, arg.Email, arg.HashedPassword)
+	var i UpdateUserCredentialsRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+	)
+	return i, err
+}
