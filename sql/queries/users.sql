@@ -10,3 +10,13 @@ DELETE FROM users;
 SELECT *
 FROM users
 WHERE email = $1;
+
+-- name: UpdateUserCredentials :one
+UPDATE users
+SET
+    email = COALESCE($2, email),
+    hashed_password = COALESCE($3, hashed_password),
+    updated_at = NOW()
+WHERE
+    id = $1
+RETURNING id, created_at, updated_at, email;

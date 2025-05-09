@@ -9,3 +9,7 @@ SELECT * FROM chirps;
 -- name: GetChirpsByID :one
 SELECT * FROM chirps
 WHERE id = $1;
+
+-- name: DeleteChirpsByID :exec
+DELETE FROM chirps
+WHERE id = $1;
