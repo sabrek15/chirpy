@@ -168,6 +168,64 @@ func (cfg *apiConfig) PostUsersHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusCreated, user)
 }
 
+func (cfg *apiConfig) updateUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+	type parameters struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	var req parameters
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return 
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	user_id, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hashedPassword, err := auth.HashPasword(req.Password)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	type param struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time	`json:"updated_at"`
+		Email string `json:"email"`
+	}
+	user, err := cfg.db.UpdateUserCredentials(r.Context(), database.UpdateUserCredentialsParams{
+		ID: user_id,
+		Email: req.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	userDetails := param{ID: user.ID, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt, Email: user.Email}
+
+	respondWithJSON(w, http.StatusOK, userDetails)
+}
+
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -376,6 +434,51 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request){
 	respondWithJSON(w, http.StatusCreated, chirp)
 }
 
+func (cfg *apiConfig) deleteChirpByID(w http.ResponseWriter, r *http.Request){
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	user_id, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	chirpIDstr := r.PathValue("chirpid")
+	chirpID, err := uuid.Parse(chirpIDstr)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Couldn't parse chirp id")
+		return
+	}
+	
+	defer r.Body.Close()
+
+	chirp , err := cfg.db.GetChirpsByID(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	if chirp.UserID == user_id {
+		err = cfg.db.DeleteChirpsByID(r.Context(), chirpID)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+		respondWithError(w, http.StatusOK, "OK")
+	} else {
+		respondWithError(w, http.StatusForbidden, "userID and chirp's user is different")
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -416,9 +519,11 @@ func main() {
 	serverHandler.HandleFunc("POST /api/chirps", cfg.postChirpsHandler)
 	serverHandler.HandleFunc("GET /api/chirps", cfg.getChirpsHandler)
 	serverHandler.HandleFunc("GET /api/chirps/{chirpid}", cfg.getChirpByID)
+	serverHandler.HandleFunc("DELETE /api/chirps/{chirpid}", cfg.deleteChirpByID)
 	serverHandler.HandleFunc("POST /api/login", cfg.loginHandler)
 	serverHandler.HandleFunc("POST /api/refresh", cfg.refreshUserToken)
 	serverHandler.HandleFunc("POST /api/revoke", cfg.refreshTokenRevoke)
+	serverHandler.HandleFunc("PUT /api/users", cfg.updateUsers)
 
 	server := &http.Server{
 		Addr:    ":8080",
