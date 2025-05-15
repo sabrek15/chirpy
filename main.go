@@ -24,6 +24,7 @@ type apiConfig struct {
 	db 	*database.Queries
 	platform string
 	tokenSecret	string
+	polkaKey string
 }
 
 
@@ -290,11 +291,12 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 		Token	  string	`json:"token"`
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	param := userWithJWT{Id: user.ID, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt, Email: user.Email, Token: jwtToken, RefreshToken: refreshToken}
+	param := userWithJWT{Id: user.ID, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt, Email: user.Email, IsChirpyRed: user.IsChirpyRed, Token: jwtToken, RefreshToken: refreshToken}
 	
 	respondWithJSON(w, http.StatusOK, param)
 }
@@ -403,12 +405,28 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request){
 	}
 	
 	defer r.Body.Close()
-	
-	chirps, err := cfg.db.GetChirps(r.Context())
-	if err != nil {
-		log.Fatal(err)
+	authorIDParam := r.URL.Query().Get("author_id")
+	if authorIDParam == "" {
+		chirps, err := cfg.db.GetChirps(r.Context())
+		if err != nil {
+			log.Fatal(err)
+		}
+		respondWithJSON(w, http.StatusFound, chirps)
+		return
+	} else {
+		authorID, err := uuid.Parse(authorIDParam)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, err.Error())
+			return
+		}
+
+		chirps, err := cfg.db.GetChirpsByAuthorID(r.Context(), authorID)
+		if err != nil {
+			respondWithError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		respondWithJSON(w, http.StatusFound, chirps)
 	}
-	respondWithJSON(w, http.StatusCreated, chirps)
 }
 
 func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request){
@@ -479,6 +497,50 @@ func (cfg *apiConfig) deleteChirpByID(w http.ResponseWriter, r *http.Request){
 	}
 }
 
+func (cfg *apiConfig) polkaWebhookHandler(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	key, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if key != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "polka key and authorization key are different")
+		return
+	}
+	type parameters struct {
+		Event string `json:"event"`
+		Data struct {
+			UserId string `json:"user_id"`
+		} `json:"data"`
+	}
+	var req parameters
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.Event != "user.upgraded" {
+		respondWithError(w, http.StatusNoContent, "Invaild Event")
+		return
+	}
+	
+	userID , err := uuid.Parse(req.Data.UserId)
+	if err != nil {
+		respondWithError(w, http.StatusNoContent, "invaild userID")
+		return
+	}
+
+	err = cfg.db.UpdateUserByID(r.Context(), userID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "UserID doesn't exist")
+		return
+	}
+
+	respondWithError(w, http.StatusNoContent, "")
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -488,6 +550,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	tokenSecret := os.Getenv("JWT_SECRET")
 	platform := os.Getenv("PLATFORM")
+	polkaKey := os.Getenv("POLKA_KEY")
 	if dbURL == "" {
 		log.Fatal("DB_URL not found in env")
 	}
@@ -505,7 +568,7 @@ func main() {
 	dbQueries := database.New(db)
 
 
-	cfg := apiConfig{db: dbQueries, platform: platform, tokenSecret: tokenSecret}
+	cfg := apiConfig{db: dbQueries, platform: platform, tokenSecret: tokenSecret, polkaKey: polkaKey}
 
 	serverHandler := http.NewServeMux()
 
@@ -524,6 +587,7 @@ func main() {
 	serverHandler.HandleFunc("POST /api/refresh", cfg.refreshUserToken)
 	serverHandler.HandleFunc("POST /api/revoke", cfg.refreshTokenRevoke)
 	serverHandler.HandleFunc("PUT /api/users", cfg.updateUsers)
+	serverHandler.HandleFunc("POST /api/polka/webhooks", cfg.polkaWebhookHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
